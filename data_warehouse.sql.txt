@@ -1,0 +1,114 @@
+USE Airbnb
+GO
+
+SELECT * from dbo.airbnb_listings$;
+
+USE Airbnb;
+GO
+
+SELECT TABLE_NAME 
+FROM INFORMATION_SCHEMA.TABLES 
+WHERE TABLE_TYPE = 'BASE TABLE';
+
+
+-- Data Cleaning
+DROP TABLE IF EXISTS airbnb_clean;
+
+SELECT 
+    TRIM(city) AS city,
+    TRIM(property_name) AS property_name,
+    TRIM(property_type) AS property_type,
+    CASE 
+        WHEN CHARINDEX(' in ', property_type) > 0 
+        THEN TRIM(LEFT(property_type, CHARINDEX(' in ', property_type) - 1))
+        ELSE TRIM(property_type)
+    END AS property_category,
+    CASE 
+        WHEN CHARINDEX(' in ', property_type) > 0 
+        THEN TRIM(SUBSTRING(property_type, CHARINDEX(' in ', property_type) + 4, 500))
+        ELSE NULL
+    END AS neighborhood,
+    TRY_CAST(price AS DECIMAL(10,2)) AS price,
+    TRY_CAST(price_total AS DECIMAL(10,2)) AS price_total,
+    currency,
+    TRY_CAST(nights AS INT) AS nights,
+    TRY_CAST(rating AS DECIMAL(3,2)) AS rating,
+    TRY_CAST(num_reviews AS INT) AS num_reviews,
+    CASE WHEN CAST(is_superhost AS NVARCHAR(10)) IN ('1', 'true', 'True') THEN 1 ELSE 0 END AS is_superhost,
+    CASE WHEN CAST(is_guest_favorite AS NVARCHAR(10)) IN ('1', 'true', 'True') THEN 1 ELSE 0 END AS is_guest_favorite,
+    TRIM(property_url) AS property_url,
+    TRY_CONVERT(DATETIME2, LEFT(scraped_at, 19), 126) AS scraped_at
+INTO airbnb_clean
+FROM airbnb_listings$
+WHERE city IS NOT NULL 
+  AND city <> 'city'
+  AND property_url IS NOT NULL 
+  AND property_url <> '';
+
+SELECT COUNT(*) AS total FROM airbnb_clean;
+SELECT TOP 10 * FROM airbnb_clean;
+
+-- 1) جدول المدن
+DROP TABLE IF EXISTS dim_city;
+CREATE TABLE dim_city (
+    city_id INT IDENTITY(1,1) PRIMARY KEY,
+    city_name NVARCHAR(100) NOT NULL UNIQUE
+);
+INSERT INTO dim_city (city_name)
+SELECT DISTINCT city FROM airbnb_clean;
+
+-- 2) جدول العقارات
+DROP TABLE IF EXISTS dim_property;
+CREATE TABLE dim_property (
+    property_id INT IDENTITY(1,1) PRIMARY KEY,
+    property_url NVARCHAR(500) NOT NULL UNIQUE,
+    property_name NVARCHAR(500),
+    property_category NVARCHAR(100),
+    neighborhood NVARCHAR(200)
+);
+INSERT INTO dim_property (property_url, property_name, property_category, neighborhood)
+SELECT DISTINCT property_url, property_name, property_category, neighborhood
+FROM airbnb_clean;
+
+-- 3) جدول الحقائق (الأسعار والتقييمات)
+DROP TABLE IF EXISTS fact_listing;
+CREATE TABLE fact_listing (
+    listing_id INT IDENTITY(1,1) PRIMARY KEY,
+    property_id INT NOT NULL,
+    city_id INT NOT NULL,
+    price DECIMAL(10,2),
+    price_total DECIMAL(10,2),
+    currency NVARCHAR(3),
+    nights INT,
+    rating DECIMAL(3,2),
+    num_reviews INT,
+    is_superhost BIT,
+    is_guest_favorite BIT,
+    scraped_at DATETIME2
+);
+
+INSERT INTO fact_listing 
+    (property_id, city_id, price, price_total, currency, nights,
+     rating, num_reviews, is_superhost, is_guest_favorite, scraped_at)
+SELECT 
+    p.property_id,
+    c.city_id,
+    s.price,
+    s.price_total,
+    s.currency,
+    s.nights,
+    s.rating,
+    s.num_reviews,
+    s.is_superhost,
+    s.is_guest_favorite,
+    s.scraped_at
+FROM airbnb_clean s
+JOIN dim_city c     ON s.city = c.city_name
+JOIN dim_property p ON s.property_url = p.property_url;
+
+SELECT 'dim_city' AS table_name, COUNT(*) AS rows_count FROM dim_city
+UNION ALL
+SELECT 'dim_property', COUNT(*) FROM dim_property
+UNION ALL
+SELECT 'fact_listing', COUNT(*) FROM fact_listing;
+
